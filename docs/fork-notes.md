@@ -60,7 +60,9 @@ pnpm run build:macos -- --bundle
 
 - 本 fork 与官方版共用 `CFBundleIdentifier = app.agenthud.mac` 和数据目录，所以设置、额度历史不会丢；但**不能同时运行两个副本**。
 - 本地构建是 ad-hoc 签名，首次打开需要「右键 → 打开」。
-- **务必关闭应用内自动更新**，否则官方版会把补丁覆盖掉。
+- 版本号改为 `0.6.9-fork.1`（`package.json` 与 `tauri.conf.json`），避免显示成源码默认的 `0.1.0`。
+- **bundle id 保持 `app.agenthud.mac` 不改**：它同时是数据目录名、Cursor 会话日志路径、`legacy_preferences` 的偏好域和 `data_folder.rs` 的测试断言；改了会丢设置、额度历史和会话统计，与「其他功能不变」冲突。隔离靠**别把官方版安装到同一路径**（或把本 fork 装到 `~/Applications`）。
+- 开源构建本身**没有更新器**：`UpdatesPane.tsx` 写着 "Open builds have no update feed"，设置页显示 Unavailable，`capabilities.json` 把 updater feeds 列为未实现（planned）。所以不会被官方自动更新覆盖；需要注意的是**别手动安装官方 dmg / Homebrew 版**去覆盖 `/Applications/Agent HUD.app`。
 - 以后同步上游：`git fetch upstream && git rebase upstream/main`，冲突集中在 `antigravity/account.rs` 与 `cli.rs`。
 
 ## 许可

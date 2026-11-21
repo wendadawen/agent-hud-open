@@ -21,7 +21,7 @@ The implementation follows the original Swift account readers:
 | Grok CLI     | The CLI's own xAI sign-in (`auth.json` in `GROK_HOME`, else `~/.grok`), never refreshed or rewritten; an expired one keeps the last credits until the CLI runs again (it renews its token on every run), and only a missing or refused sign-in counts as signed out | The CLI's billing endpoint (`cli-chat-proxy.grok.com/v1/billing?format=credits`): the share of the period's credits used, on-demand credits of their cap when reported, the plan from `/v1/settings` |
 | Copilot      | Once Copilot quota reading is on: the GitHub CLI's sign-in (environment, credential store, `hosts.yml`), then the one GitHub's Copilot clients keep (`github-copilot/apps.json`, older `hosts.json`); a token GitHub refuses gives way to the next | `copilot_internal/user`; premium requests beyond the plan as an estimated overage in US dollars (US$0.04 each, GitHub's published price) |
 | Hermes / Nous Portal | Hermes's own Nous Portal sign-in (`auth.json` in `HERMES_HOME`, else `~/.hermes`: `providers.nous`, else the credential pool; else `shared/nous_auth.json`), never refreshed or rewritten, since Nous rotates its refresh tokens and a reused one signs Hermes out; an expired access token is never sent: the reading is transient, so the last credits stay as they were for 10 minutes and then show stale with the reason that Hermes renews its Nous Portal sign-in the next time it runs and the credits update then; no Nous sign-in shows nothing | `GET /api/oauth/account` on the stored portal only when it is `https` on `nousresearch.com` or a subdomain, else `portal.nousresearch.com`: the month's subscription credits used of the grant (resetting at the period end), the top-up credits in US dollars, the plan; a refused token is a sign-out |
-| Antigravity  | Connected CLI status-line reports and all running authenticated language servers | Identified quota callbacks, serial loopback `GetUserStatus`, anonymous `/usage` fallback |
+| Antigravity  | Connected CLI status-line reports, all running authenticated language servers, and (with consent) the installed CLI's `/usage` | Identified quota callbacks, serial loopback `GetUserStatus`, a `/usage` refresh on every account pass, anonymous `/usage` fallback |
 | Factory Droid | A Factory API key only: `FACTORY_API_KEY` in the environment, else in `~/.factory/.env` (CodexBar's place for it); Droid's own sign-in and the web app's cookies are never read. No key leaves a notice, not a sign-out; a key Factory refuses (401/403) is signed out | `GET api.factory.ai/api/billing/limits`, as the CLI's `/usage` does: the share used of the five-hour, weekly and monthly windows of the Standard pool and, where reported, the Droid Core pool (a positive `secondsRemaining` sets the reset, else a future `windowEnd`; a window whose end passed reads as reset), and the extra usage balance in US dollars. A plan with no windows there shows a notice. Shapes follow CodexBar's Factory probe (MIT) |
 | Cline (ClinePass) | Cline's own sign-in in `providers.json` (`providers.cline.settings`, under `CLINE_DATA_DIR`, else `CLINE_DIR`/`~/.cline` `data/settings`): its browser sign-in's access token, sent as `workos:<token>`, else a saved API key, else `CLINE_API_KEY`; never refreshed or rewritten. An expired token keeps the last reading until Cline runs again; a 401 is a sign-out, a 403 or 404 an account with no plan to read | `api.cline.bot/api/v1/users/me/plan/usage-limits`: the 5-hour, weekly and monthly share used and their resets |
 | Qoder, Qoder CN, QoderWork | Separate providers (`qoder`, `qoder-cn`, `qoder-work`). Each reads its own local desktop `auth.v1.dat` (`com.qoder.app.stable`, `com.qoder.cn.stable`, `com.qoder.work.stable`) or IDE `User/globalStorage/state.vscdb` (`secret://aicoding.auth.{userInfo,userPlan,creditUsage}`) in read-only mode, never calling `/api/v1/deviceToken/refresh`; `qoder` and `qoder-cn` also accept a sign-in on `qoder.com` or `qoder.com.cn` in Agent HUD's window as fallback | `GET {openapi}/sash/api/v2/me/usage` (`openapi.qoder.sh`, `openapi.qoder.com.cn`, or `dedicatedOpenapi` from `app.json`) with cached `creditUsage` fallback when the local token is refused; web sign-in fallback reads `GET /api/v2/me/usages/big_model_credits` |
@@ -265,11 +265,21 @@ unknown. The original CLI observation time remains visible even when a native
 service is running. Different native team identities remain separate because
 the status-line payload provides no team identity.
 
-When no identified account is available, a running `agy` can supply anonymous
-quota through `/usage` in JSON print mode. This fallback starts no model turn;
-it is labeled **Antigravity CLI**, and automatic updates are disabled for the
-short-lived query. It cannot refresh an inactive identified CLI account. The
-verified CLI contract and official references are recorded in
+While the owner allows the client's own interface to be read (`official` or
+`full` under `quotaReading`, and `full` is the default), every account pass
+also asks the installed CLI for a fresh summary with
+`agy -p /usage --output-format json`. Print mode starts no model turn, spends
+no quota and leaves no session behind. The CLI is found at
+`ANTIGRAVITY_CLI_PATH`, or at the installer's `~/.local/bin/agy`; a missing
+file costs nothing, and a failed run never discards the readings already
+collected. The result carries no identity, so its windows are re-keyed onto
+the signed-in email and merged with the account's status-line report rather
+than shown as a second, anonymous account.
+
+When no identified account is available, a running `agy` can still supply
+anonymous quota through `/usage` in JSON print mode. That last fallback is
+labeled **Antigravity CLI** and stays a one-off query. The verified CLI
+contract and official references are recorded in
 [the Antigravity parity ledger](parity/c02b-antigravity-cursor.md#cli-account-selection-investigation-2026-10-22).
 
 Quota observations and complete per-call usage are persisted in Agent HUD's own
