@@ -548,3 +548,43 @@ fn a_missing_cli_costs_nothing() {
     assert!(host.started.borrow().is_empty());
     assert_eq!(reading.quotas.len(), 2);
 }
+
+#[test]
+fn a_stale_status_line_still_gets_a_fresh_cli_reading() {
+    // No language server account, and the only status-line report is old:
+    // the account is stale, which is precisely when /usage has to run.
+    let mut host = FakeHost::new("/u").env("ANTIGRAVITY_CLI_PATH", "/installed/agy");
+    host.natives.insert(
+        ("antigravity".into(), "ReadAccounts".into()),
+        Ok(json!({"accounts": []})),
+    );
+    host.account_reports.insert(
+        "antigravity".into(),
+        vec![json!({
+            "email": "Me@Example.com",
+            "plan_tier": "Google AI Ultra",
+            "observedAt": "2026-10-01T00:00:00Z",
+            "quota": {}
+        })],
+    );
+    host.files.insert(
+        "/installed/agy".into(),
+        crate::account::Answer::Found(vec![]),
+    );
+    host.engine_output.insert("-p".into(), vec![usage_body()]);
+
+    let reading = read(&host).unwrap();
+    assert!(host
+        .started
+        .borrow()
+        .iter()
+        .any(|start| start.1 == ["-p", "/usage", "--output-format", "json"]));
+    let id = account_id("antigravity", &["me@example.com", ""]);
+    let weekly = reading
+        .quotas
+        .iter()
+        .find(|quota| quota["id"] == format!("{id}:gemini-weekly"))
+        .expect("the fresh CLI window replaced the stale one");
+    assert!((weekly["usedPercent"].as_f64().unwrap() - 60.0).abs() < 0.001);
+    assert_ne!(reading.account.unwrap()["stale"], true);
+}

@@ -152,20 +152,43 @@ pub fn read(host: &dyn Host) -> Result<Reading, Unread> {
     // not a failed account reading, and a missing CLI costs nothing.
     if host.quota_reading(AGENT.id).allows(QuotaReading::Official) {
         if let Some(executable) = usage_executable(host) {
+            // A status-line report older than five minutes is exactly the case
+            // a fresh `/usage` reading is for: its account is stale, but it
+            // still names the sign-in. Prefer a fresh row when one exists.
             let email = cli_email(host).or_else(|| {
-                reading
-                    .account
-                    .iter()
-                    .chain(&reading.additional_accounts)
-                    .filter(|row| row["stale"] != true)
-                    .filter_map(|row| row["label"].as_str())
-                    .find(|label| label.contains('@'))
-                    .map(str::to_owned)
+                let label = |fresh_only: bool| {
+                    reading
+                        .account
+                        .iter()
+                        .chain(&reading.additional_accounts)
+                        .filter(|row| !fresh_only || row["stale"] != true)
+                        .filter_map(|row| row["label"].as_str())
+                        .find(|label| label.contains('@'))
+                        .map(str::to_owned)
+                };
+                label(true).or_else(|| label(false))
             });
             if let Some(email) = email {
                 if let Ok(anonymous) = super::cli::read(host, &executable) {
                     if let Ok(identified) = super::cli::identified(anonymous, &email) {
                         merge(&mut reading, identified);
+                        // The CLI has just read this account through its own
+                        // interface, so its row is observed again even though
+                        // the callback has not reported since.
+                        let now = chrono::Utc::now().to_rfc3339();
+                        for row in reading
+                            .account
+                            .iter_mut()
+                            .chain(&mut reading.additional_accounts)
+                        {
+                            if row["label"]
+                                .as_str()
+                                .is_some_and(|label| label.eq_ignore_ascii_case(&email))
+                            {
+                                row["stale"] = json!(false);
+                                row["checkedAt"] = json!(now);
+                            }
+                        }
                     }
                 }
             }
