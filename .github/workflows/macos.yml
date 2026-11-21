@@ -1,0 +1,80 @@
+name: macOS desktop (fork build)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'fix/**']
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-14 # Apple Silicon, arm64
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+
+      - name: Rust checks and tests
+        run: |
+          mkdir -p src/apps/desktop/src-tauri/resources
+          cargo clippy --workspace --tests --locked -- -D warnings
+          cargo test --workspace --locked --no-fail-fast
+
+      - name: Build macOS bundle
+        run: pnpm run build:macos -- --bundle
+
+      - name: Record provenance and checksums
+        run: |
+          bundle=target/release/bundle
+          test -d "$bundle" || { echo "No bundle produced"; exit 1; }
+          revision=$(git rev-parse HEAD)
+          printf '{"revision":"%s","run":"%s/%s/actions/runs/%s","signed":false}\n' \
+            "$revision" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
+            > "$bundle/provenance.json"
+          find "$bundle" -type f \( -name '*.dmg' -o -name '*.app.tar.gz' \) -print0 \
+            | xargs -0 -r sh -c 'for f; do shasum -a 256 "$f"; done' sh \
+            > "$bundle/SHA256SUMS"
+          cat "$bundle/SHA256SUMS"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-hud-open-macos-arm64
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app
+            target/release/bundle/provenance.json
+            target/release/bundle/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/SHA256SUMS

@@ -1,21 +1,27 @@
 //! Antigravity's quota (Open's AntigravityService and AntigravityClient):
 //! CLI status-line callbacks identify each account; running language servers
-//! supply accounts without callbacks. Anonymous `/usage` is the last fallback.
-//! Each account names the clients it was read through (`readBy`): the CLI
-//! for its reports and its fallback, and the desktop app, the IDE or the CLI
-//! for the language server each one runs; an account several of them are
-//! signed in to is shown once, with all of them. The CLI counts too while it
-//! is not running, for the account its saved sign-in names.
+//! supply accounts without callbacks. With the owner's consent, every account
+//! pass also asks the installed CLI for a fresh `/usage` summary, so a quota
+//! that the CLI is not running cannot report still updates. Anonymous `/usage`
+//! is the last fallback. Each account names the clients it was read through
+//! (`readBy`): the CLI for its reports and its fallback, and the desktop app,
+//! the IDE or the CLI for the language server each one runs; an account
+//! several of them are signed in to is shown once, with all of them. The CLI
+//! counts too while it is not running, for the account its saved sign-in names.
 use super::quotas::parse;
 use super::{ACCOUNT_SERVICE, AGENT};
 use crate::account::{
-    add_readers, read_by, read_json_bounded, resolve, Host, Provider, Reading, Reported, Unread,
+    add_readers, read_by, read_json_bounded, resolve, Answer, Host, Provider, QuotaReading,
+    Reading, Reported, Unread,
 };
 use crate::l10n::tr;
 use crate::split::ANTIGRAVITY_CLI;
 use crate::Location;
 use serde_json::{json, Value};
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 /// Antigravity's plan, from its CLI's status-line reports and its running
 /// language servers. A CLI report goes stale when the CLI stops reporting.
@@ -138,6 +144,33 @@ pub fn read(host: &dyn Host) -> Result<Reading, Unread> {
             Err(_) => partial = true,
         }
     }
+    // Every account pass asks the installed CLI for a fresh summary when the
+    // owner allowed reading through the client's own interface. Print mode
+    // starts no turn, spends no quota and leaves no session behind. It carries
+    // no identity, so re-key its windows onto the sign-in and merge them with
+    // the report the status-line callback already supplied; a failed run is
+    // not a failed account reading, and a missing CLI costs nothing.
+    if host.quota_reading(AGENT.id).allows(QuotaReading::Official) {
+        if let Some(executable) = usage_executable(host) {
+            let email = cli_email(host).or_else(|| {
+                reading
+                    .account
+                    .iter()
+                    .chain(&reading.additional_accounts)
+                    .filter(|row| row["stale"] != true)
+                    .filter_map(|row| row["label"].as_str())
+                    .find(|label| label.contains('@'))
+                    .map(str::to_owned)
+            });
+            if let Some(email) = email {
+                if let Ok(anonymous) = super::cli::read(host, &executable) {
+                    if let Ok(identified) = super::cli::identified(anonymous, &email) {
+                        merge(&mut reading, identified);
+                    }
+                }
+            }
+        }
+    }
     if reading.quotas.is_empty() && reading.account.is_none() {
         if let Some(executable) = executable {
             let mut cli = super::cli::read(host, Path::new(&executable))?;
@@ -226,6 +259,18 @@ const CLI_SIGN_IN: Location = Location::home(
     &[".gemini"],
     "antigravity-cli/antigravity-oauth-token",
 );
+
+/// The installed CLI for a read-only `/usage` run. An explicit
+/// `ANTIGRAVITY_CLI_PATH` wins; otherwise the official installer's location.
+/// Nothing is started when the file is absent.
+fn usage_executable(host: &dyn Host) -> Option<PathBuf> {
+    let path = host
+        .env("ANTIGRAVITY_CLI_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| host.home().join(".local/bin/agy"));
+    matches!(host.file_info(&path), Answer::Found(_)).then_some(path)
+}
 
 /// The account the Antigravity CLI is signed in to, by its email: only the
 /// sign-in's `id_token_email`, never its tokens.

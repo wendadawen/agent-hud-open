@@ -1,6 +1,8 @@
 //! The running agy's read-only slash command, as recorded by the native app's
 //! AntigravityCLITests. It reports quota groups but no signed-in identity.
-use crate::account::{account_id, legacy_unresolved, status, EngineStart, Host, Reading};
+use crate::account::{
+    account_id, legacy_account, legacy_unresolved, status, EngineStart, Host, Reading,
+};
 use crate::l10n::tr;
 use crate::naming::{vendor_windows, window_names::Period};
 use chrono::Utc;
@@ -35,6 +37,36 @@ pub(super) fn read(host: &dyn Host, executable: &Path) -> Result<Reading, String
             .to_string_lossy(),
         &body,
     )
+}
+
+/// Re-key a `/usage` reading onto the sign-in it was read for, so its windows
+/// merge with the account's official status-line report instead of appearing
+/// as a second, anonymous card. The account row is left to that report, which
+/// knows the plan; only the quota windows are refreshed here.
+pub(super) fn identified(mut reading: Reading, email: &str) -> Result<Reading, String> {
+    // The official status-line report lowercases the email before keying the
+    // account; do the same so both readings share one identity.
+    let email = email.trim().to_lowercase();
+    let account = legacy_account("Antigravity", &email, "").ok_or_else(failure)?;
+    let id = account_id("antigravity", &[&email, ""]);
+    reading.account = None;
+    reading.additional_accounts.clear();
+    let observed = Utc::now().to_rfc3339();
+    for quota in &mut reading.quotas {
+        let key = quota["id"]
+            .as_str()
+            .and_then(|value| value.rsplit(':').next())
+            .filter(|key| !key.is_empty())
+            .ok_or_else(failure)?;
+        quota["id"] = json!(format!("{id}:{key}"));
+        quota["accountId"] = json!(account);
+        quota["account"] = json!(email);
+        quota["source"] = json!("antigravity_cli");
+        quota["stale"] = json!(false);
+        quota["status"] = json!(status(quota["usedPercent"].as_f64().unwrap_or(0.0)));
+        quota["observedAt"] = json!(observed);
+    }
+    Ok(reading)
 }
 
 fn parse(scope: &str, body: &Value) -> Result<Reading, String> {
@@ -219,5 +251,25 @@ mod tests {
         host.engine_output.insert("-p".into(), vec![usage()]);
         host.engine_ends = false;
         assert!(read(&host, Path::new("/installed/agy")).is_err());
+    }
+
+    #[test]
+    fn identified_usage_rekeys_windows_without_a_second_account() {
+        let mut host = FakeHost::new("/u");
+        host.engine_output.insert("-p".into(), vec![usage()]);
+        let anonymous = read(&host, Path::new("/installed/agy")).unwrap();
+        let reading = super::identified(anonymous, "me@example.com").unwrap();
+        let account = legacy_account("Antigravity", "me@example.com", "").unwrap();
+        let id = account_id("antigravity", &["me@example.com", ""]);
+        assert!(reading.account.is_none());
+        assert_eq!(reading.quotas.len(), 4);
+        assert_eq!(reading.quotas[0]["id"], format!("{id}:gemini-weekly"));
+        assert_eq!(reading.quotas[2]["id"], format!("{id}:3p-weekly"));
+        for quota in &reading.quotas {
+            assert_eq!(quota["account"], "me@example.com");
+            assert_eq!(quota["accountId"], account);
+            assert_eq!(quota["source"], "antigravity_cli");
+            assert_eq!(quota["stale"], false);
+        }
     }
 }

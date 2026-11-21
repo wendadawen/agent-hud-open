@@ -485,3 +485,66 @@ fn the_clis_saved_sign_in_counts_while_it_is_not_running() {
         json!(["antigravity"])
     );
 }
+
+fn usage_body() -> Value {
+    json!({"status":"SUCCESS","command":{"name":"usage","data":{"groups":[
+        {"name":"Gemini Models","buckets":[
+            {"id":"gemini-weekly","name":"Weekly Limit Remaining","window":"weekly",
+             "remaining_fraction":0.4,"reset_time":"2026-10-30T00:00:00Z"},
+            {"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.9}]},
+        {"name":"Claude and GPT models","buckets":[
+            {"id":"3p-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.8},
+            {"id":"3p-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1.0}]}]}}})
+}
+
+fn cli_ready() -> FakeHost {
+    let mut host = answering(Ok(status_body())).env("ANTIGRAVITY_CLI_PATH", "/installed/agy");
+    host.files.insert(
+        "/installed/agy".into(),
+        crate::account::Answer::Found(vec![]),
+    );
+    host.engine_output.insert("-p".into(), vec![usage_body()]);
+    host
+}
+
+#[test]
+fn every_pass_refreshes_windows_from_the_installed_cli() {
+    let host = cli_ready();
+    let reading = read(&host).unwrap();
+    let started = host.started.borrow();
+    assert!(started.iter().any(|start| start.0.as_path()
+        == std::path::Path::new("/installed/agy")
+        && start.1 == ["-p", "/usage", "--output-format", "json"]));
+    drop(started);
+    let id = account_id("antigravity", &["me@example.com", ""]);
+    let weekly = reading
+        .quotas
+        .iter()
+        .find(|quota| quota["id"] == format!("{id}:gemini-weekly"))
+        .expect("the CLI window is keyed onto the signed-in account");
+    assert!((weekly["usedPercent"].as_f64().unwrap() - 60.0).abs() < 0.001);
+    assert_eq!(weekly["source"], "antigravity_cli");
+    assert_eq!(weekly["stale"], false);
+}
+
+#[test]
+fn quota_reading_off_does_not_start_the_cli() {
+    let mut host = cli_ready();
+    host.quota_levels
+        .insert("antigravity".into(), crate::account::QuotaReading::Off);
+    let reading = read(&host).unwrap();
+    assert!(host.started.borrow().is_empty());
+    let id = account_id("antigravity", &["me@example.com", ""]);
+    assert!(!reading
+        .quotas
+        .iter()
+        .any(|quota| quota["id"] == format!("{id}:gemini-weekly")));
+}
+
+#[test]
+fn a_missing_cli_costs_nothing() {
+    let host = answering(Ok(status_body()));
+    let reading = read(&host).unwrap();
+    assert!(host.started.borrow().is_empty());
+    assert_eq!(reading.quotas.len(), 2);
+}
